@@ -1,0 +1,1175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Rahuls DE Node Converter</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' };
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+  <style>
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .file-input-label { cursor: pointer; display:inline-block; padding:0.6rem 1.1rem; background:#4f46e5; color:white; border-radius:0.5rem; transition: background-color 0.2s; }
+    .file-input-label:hover { background-color: #4338ca; }
+    .file-input-label.disabled { background-color: #a5b4fc; cursor: not-allowed; }
+    #file-upload { display:none; }
+    /* table td, table th { white-space: nowrap; } <-- Removed this line to allow wrapping */
+    .spinner {
+      border: 4px solid #f3f4f6;
+      border-top: 4px solid #4f46e5;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    /* tiny utility for merged box scrollbar look */
+    .merged-box { max-height: 14rem; overflow:auto; }
+  </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 dark:text-gray-100 min-h-screen flex items-start justify-center p-6">
+  <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 md:p-8 w-full max-w-6xl">
+    <header class="mb-6 text-center relative">
+      <h1 class="text-2xl font-bold">Rahuls DE Node Converter</h1>
+      <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">Uploads: .xlsx .xls .csv. Times converted. Channels set. Duplicates removed. Columns re-ordered. Text translated.</p>
+      <!-- Dark mode toggle button (top-right) -->
+      <button id="theme-toggle" class="absolute right-0 top-0 mt-1 mr-1 p-2 rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors duration-200" title="Toggle Dark Mode">🌙</button>
+    </header>
+
+    <div class="flex items-center gap-4 mb-2">
+      <label for="file-upload" id="file-label" class="file-input-label">Choose file</label>
+      <input id="file-upload" type="file" accept=".xlsx,.xls,.csv" />
+      <div id="file-name" class="text-sm text-gray-600 dark:text-gray-400">No file selected</div>
+      <!-- NEW BUTTON -->
+      <button id="clear-session" class="ml-auto px-3 py-1 rounded-md border border-red-500 text-red-500 text-sm hover:bg-red-50 dark:hover:bg-red-900/10 dark:hover:bg-red-500/10">Clear Session</button>
+    </div>
+
+    <!-- Hour adjust buttons (side-by-side) + download button placeholder -->
+    <div class="flex items-center gap-2 mb-4">
+      <button id="decrease-hour" class="px-3 py-1 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-700 text-sm hover:bg-gray-50 dark:hover:bg-gray-600">−1h</button>
+      <button id="increase-hour" class="px-3 py-1 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-700 text-sm hover:bg-gray-50 dark:hover:bg-gray-600">+1h</button>
+      <div class="text-sm text-gray-500 dark:text-gray-400 ml-3">Adjust displayed UTC times (main table only)</div>
+
+      <!-- Download button (hidden until processing completed) -->
+      <div class="ml-auto">
+        <button id="download-main-xlsx" class="hidden px-3 py-1 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-700 text-sm hover:bg-gray-50 dark:hover:bg-gray-600" title="Download main table as .xlsx">Download Main Table (.xlsx)</button>
+      </div>
+    </div>
+
+    <div id="message-area" class="mb-4 h-6" aria-live="polite"></div>
+
+    <!-- New Heading for Main Table -->
+    <h2 class="text-xl font-bold mb-3 mt-6">Converted Events (Main Table)</h2>
+    <div id="table-container" class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-auto bg-white dark:bg-gray-800">
+      <div id="table-placeholder" class="p-8 text-center text-gray-400 dark:text-gray-500">
+        <p>Your table will appear here after upload.</p>
+      </div>
+    </div>
+
+    <!-- Merged Events box (will be populated when merges occur) -->
+    <div id="merged-events-container" class="mt-6"></div>
+
+    <!-- Filtered-out Table container -->
+    <div id="filtered-table-container" class="mt-6"></div>
+
+  </div>
+
+<script>
+// Theme toggle logic (uses Tailwind's class-based dark mode + localStorage)
+(function(){
+  const themeToggle = document.getElementById('theme-toggle');
+  const htmlEl = document.documentElement;
+  // Apply stored preference, or use system preference if none
+  if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    htmlEl.classList.add('dark');
+  } else {
+    htmlEl.classList.remove('dark');
+  }
+  themeToggle.textContent = htmlEl.classList.contains('dark') ? '☀️' : '🌙';
+  themeToggle.addEventListener('click', () => {
+    htmlEl.classList.toggle('dark');
+    const isDark = htmlEl.classList.contains('dark');
+    themeToggle.textContent = isDark ? '☀️' : '🌙';
+    try { localStorage.theme = isDark ? 'dark' : 'light'; } catch(e) {}
+  });
+})();
+
+// Hour adjust buttons: only for main table (not filtered table)
+document.getElementById('increase-hour').addEventListener('click', () => adjustMainTableHours(1));
+document.getElementById('decrease-hour').addEventListener('click', () => adjustMainTableHours(-1));
+
+// Download button handler - with sport-column sanitization
+const downloadBtn = document.getElementById('download-main-xlsx');
+downloadBtn.addEventListener('click', () => {
+  if (!window.lastFinalOut || !Array.isArray(window.lastFinalOut)) return;
+  try {
+    // Create a sanitized deep copy so we don't mutate the UI data
+    const copy = window.lastFinalOut.map(row => row.slice ? row.slice() : Array.from(row));
+    if (copy.length > 1) {
+      // sport column is index 3 in finalOut (0: date, 1: channel, 2: Linear, 3: sport, ...)
+      const SPORT_IDX = 3;
+      for (let i = 1; i < copy.length; i++) {
+        const row = copy[i];
+        if (!row || typeof row[SPORT_IDX] !== 'string') continue;
+        const val = row[SPORT_IDX].trim();
+        if (val.includes(':')) {
+          row[SPORT_IDX] = val.split(':')[0].trim();
+        } else {
+          // keep as-is
+        }
+      }
+    }
+    const ws = XLSX.utils.aoa_to_sheet(copy);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, 'converted_output.xlsx');
+  } catch (e) {
+    console.error('Export failed', e);
+    // Use custom modal or message area instead of alert()
+    showMessage('Export failed: ' + (e?.message || e), 'error');
+  }
+});
+
+// NEW: Clear session button handler
+const clearBtn = document.getElementById('clear-session');
+clearBtn.addEventListener('click', () => {
+  try {
+    localStorage.removeItem('rahulsConverterCache');
+    console.log('Cleared session from localStorage.');
+  } catch (e) {
+    console.warn('Failed to clear localStorage', e);
+  }
+  // Reload the page to get a fresh start
+  location.reload();
+});
+
+/**
+ * Adjust displayed UTC times in the main table by deltaHours (integer).
+ * Looks for data-utc attributes on the start/end TDs and updates display and attribute.
+ */
+function adjustMainTableHours(deltaHours) {
+  try {
+    const tbl = document.querySelector('#table-container table');
+    if (!tbl) return;
+    const thead = tbl.querySelector('thead');
+    if (!thead) return;
+    // Find indices by header text
+    const headers = Array.from(thead.querySelectorAll('th')).map(th => th.textContent?.trim());
+    // find date col index (first header that doesn't equal 'Broadcast Start/End' ideally original date header)
+    const startIdx = headers.findIndex(h => /Broadcast Start Time UTC/i.test(h));
+    const endIdx = headers.findIndex(h => /Broadcast End Time UTC/i.test(h));
+    // date column likely at index 0 (matches your output), but safer to find header that looks like a date column name:
+    const dateIdx = headers.findIndex(h => !/Broadcast Start Time UTC|Broadcast End Time UTC|Linear/i.test(h) && h.length > 0 && /date/i.test(h.toLowerCase())) !== -1
+      ? headers.findIndex(h => !/Broadcast Start Time UTC|Broadcast End Time UTC|Linear/i.test(h) && h.length > 0 && /date/i.test(h.toLowerCase()))
+      : 0;
+
+    const tbody = tbl.querySelector('tbody');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    for (const tr of rows) {
+      // update start time cell
+      if (startIdx !== -1) {
+        const startTd = tr.children[startIdx];
+        if (startTd && startTd.dataset && startTd.dataset.utc) {
+          let iso = startTd.dataset.utc;
+          // parse with Luxon, shift, update
+          let dt = luxon.DateTime.fromISO(iso, { zone: 'utc' });
+          if (dt.isValid) {
+            dt = dt.plus({ hours: deltaHours });
+            startTd.dataset.utc = dt.toISO();
+            startTd.textContent = pad(dt.hour) + ':' + pad(dt.minute);
+            // update date cell as well if present
+            if (dateIdx !== -1) {
+              const dateTd = tr.children[dateIdx];
+              if (dateTd) dateTd.textContent = formatDDMMYYYY(dt);
+            }
+          }
+        } else if (startTd) {
+          // fallback: if no data-utc, try to parse text from date + time cells
+          // parse date from date cell and time from startTd text (DD/MM/YYYY and HH:MM)
+          const dateTd = tr.children[dateIdx];
+          const dateStr = dateTd ? dateTd.textContent.trim() : '';
+          const timeStr = startTd.textContent.trim();
+          const parsed = extractDMY(dateStr);
+          if (parsed && timeStr.match(/\d{1,2}:\d{2}/)) {
+            let dt = luxon.DateTime.fromObject({ year: parsed.y, month: parsed.m, day: parsed.d, hour: parseInt(timeStr.split(':')[0],10), minute: parseInt(timeStr.split(':')[1],10) }, { zone: 'utc' });
+            if (dt.isValid) {
+              dt = dt.plus({ hours: deltaHours });
+              startTd.dataset.utc = dt.toISO();
+              startTd.textContent = pad(dt.hour) + ':' + pad(dt.minute);
+              if (dateTd) dateTd.textContent = formatDDMMYYYY(dt);
+            }
+          }
+        }
+      }
+
+      // update end time cell
+      if (endIdx !== -1) {
+        const endTd = tr.children[endIdx];
+        if (endTd && endTd.dataset && endTd.dataset.utc) {
+          let iso = endTd.dataset.utc;
+          let dt = luxon.DateTime.fromISO(iso, { zone: 'utc' });
+          if (dt.isValid) {
+            dt = dt.plus({ hours: deltaHours });
+            endTd.dataset.utc = dt.toISO();
+            endTd.textContent = pad(dt.hour) + ':' + pad(dt.minute);
+          }
+        } else if (endTd) {
+          // fallback parse from displayed text + date
+          const dateTd = tr.children[dateIdx];
+          const dateStr = dateTd ? dateTd.textContent.trim() : '';
+          const timeStr = endTd.textContent.trim();
+          const parsed = extractDMY(dateStr);
+          if (parsed && timeStr.match(/\d{1,2}:\d{2}/)) {
+            let dt = luxon.DateTime.fromObject({ year: parsed.y, month: parsed.m, day: parsed.d, hour: parseInt(timeStr.split(':')[0],10), minute: parseInt(timeStr.split(':')[1],10) }, { zone: 'utc' });
+            if (dt.isValid) {
+              dt = dt.plus({ hours: deltaHours });
+              endTd.dataset.utc = dt.toISO();
+              endTd.textContent = pad(dt.hour) + ':' + pad(dt.minute);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Adjust hours failed', e);
+  }
+}
+
+function pad(n){ return String(n).padStart(2,'0'); }
+function formatDDMMYYYY(dt){ return `${pad(dt.day)}/${pad(dt.month)}/${dt.year}`; }
+
+/* Main app — includes:
+  - Original features
+  - Sport column trimming (at colon) in *main* table
+  - Stronger non-live filter (AI prompt + keyword list)
+  - Display table for *all* filtered-out rows with reasons
+  - Fix for "classic" keyword and "4. Tag" event classification
+  - NEW: Time headers changed to UTC
+  - NEW: Merged overlapping/contiguous events (by Additional Info)
+  - UPDATED: Expanded, case-insensitive knownSports list
+  - NEW: Download main table button (shown after processing) with sport-column sanitization
+  - NEW: Sorting after merging — ascending by start datetime
+  - NEW: Collapsible Merged & Filtered sections
+*/
+
+const fileInput = document.getElementById('file-upload');
+const fileLabel = document.getElementById('file-label');
+const fileNameSpan = document.getElementById('file-name');
+const tableContainer = document.getElementById('table-container');
+const messageArea = document.getElementById('message-area');
+const mergedEventsContainer = document.getElementById('merged-events-container');
+const SOURCE_TIMEZONE = 'Europe/Berlin';
+
+ // Gemini config
+const apiUrl = "/api/gemini"; // local relative path to your Vercel function
+const API_CHUNK_SIZE = 200;
+
+// lastFinalOut will store the final matrix (array of arrays) for download
+window.lastFinalOut = null;
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  clearMessage();
+  tableContainer.innerHTML = document.getElementById('table-placeholder').outerHTML;
+  mergedEventsContainer.innerHTML = ''; // clear merged box
+  document.getElementById('filtered-table-container').innerHTML = ''; // Clear filtered table
+  setLoading(true, 'Reading file...');
+  fileNameSpan.textContent = file.name;
+
+  // hide download until processed
+  downloadBtn.classList.add('hidden');
+
+  try {
+    let dataArr;
+    if (file.name.toLowerCase().endsWith('.csv')) {
+      const text = await readFileAsText(file);
+      const delimiter = text.includes(';') ? ';' : ',';
+      dataArr = parseCSV(text, delimiter);
+    } else {
+      const ab = await readFileAsArrayBuffer(file);
+      const workbook = XLSX.read(ab, { type: 'array', cellDates: true });
+      const firstSheet = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheet];
+      dataArr = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: '' });
+    }
+
+    if (!Array.isArray(dataArr) || dataArr.length === 0) {
+      showMessage('No data found in file.', 'error');
+      setLoading(false);
+      return;
+    }
+
+    const converted = await convertAndReorder(dataArr, file.name); // Pass file name
+    if (converted) {
+      renderTable(converted);
+      // store for download and show download button
+      window.lastFinalOut = converted;
+      downloadBtn.classList.remove('hidden');
+    } else {
+      // if convertAndReorder returned null, ensure download hidden
+      window.lastFinalOut = null;
+      downloadBtn.classList.add('hidden');
+    }
+  } catch (err) {
+    console.error(err);
+    showMessage('Error processing file: ' + (err?.message || String(err)), 'error');
+    window.lastFinalOut = null;
+    downloadBtn.classList.add('hidden');
+    try { localStorage.removeItem('rahulsConverterCache'); } catch (e) { console.warn('Failed to clear cache', e); } // Clear cache on error
+  } finally {
+    setLoading(false);
+  }
+});
+
+function readFileAsText(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const buffer = r.result;
+        const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+        const text = utf8Decoder.decode(buffer);
+        res(text);
+      } catch (e) {
+        console.warn('UTF-8 decoding failed, falling back to windows-1252.');
+        const latinDecoder = new TextDecoder('windows-1252');
+        const text = latinDecoder.decode(r.result);
+        res(text);
+      }
+    };
+    r.onerror = () => rej(new Error('Could not read file as array buffer'));
+    r.readAsArrayBuffer(file);
+  });
+}
+function readFileAsArrayBuffer(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(new Error('Could not read file as array buffer'));
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function parseCSV(text, delimiter=',') {
+  const rows = [];
+  const lines = text.split(/\r\n|\n|\r/);
+  for (let line of lines) {
+    const row = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i+1] === '"') { cur += '"'; i++; }
+        else inQuotes = !inQuotes;
+      } else if (!inQuotes && ch === delimiter) {
+        row.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    row.push(cur);
+    const cleaned = row.map(cell => cell === undefined ? '' : cell.trim().replace(/^"(.*)"$/, '$1').replace(/""/g,'"'));
+    rows.push(cleaned);
+  }
+  if (rows.length > 0 && rows[rows.length-1].length === 1 && rows[rows.length-1][0] === '') rows.pop();
+  return rows;
+}
+
+function showMessage(msg, type='info') {
+  const color = type === 'error' ? 'text-red-600' : 'text-blue-600';
+  messageArea.innerHTML = `<p class="${color} font-medium">${escapeHtml(msg)}</p>`;
+}
+function clearMessage(){ messageArea.innerHTML = ''; }
+
+function setLoading(isLoading, message = '') {
+  if (isLoading) {
+    messageArea.innerHTML = `<div class="flex items-center"><div class="spinner"></div><span class="text-blue-600 font-medium">${escapeHtml(message)}</span></div>`;
+    fileLabel.classList.add('disabled');
+    fileInput.disabled = true;
+  } else {
+    if (message) showMessage(message, 'info'); else clearMessage();
+    fileLabel.classList.remove('disabled');
+    fileInput.disabled = false;
+  }
+}
+
+/* ---------- AI processing functions ---------- */
+async function getProcessedRowDataAI(uniqueRowData) {
+  const processedMap = new Map();
+  const chunks = [];
+  for (let i = 0; i < uniqueRowData.length; i += API_CHUNK_SIZE)
+    chunks.push(uniqueRowData.slice(i, i + API_CHUNK_SIZE));
+
+  const responseSchema = {
+    type: "ARRAY",
+    items: {
+      type: "OBJECT",
+      properties: {
+        "original_sport": { "type": "STRING" },
+        "original_event": { "type": "STRING" },
+        "original_add_info": { "type": "STRING" },
+        "sport_en": { "type": "STRING" },
+        "context_en": { "type": "STRING" },
+        "event_en": { "type": "STRING" },
+        "add_info_en": { "type": "STRING" },
+        "is_live_event": { "type": "BOOLEAN" }
+      },
+      required: ["original_sport", "original_event", "original_add_info", "sport_en", "context_en", "event_en", "add_info_en", "is_live_event"]
+    }
+  };
+
+  const systemPrompt = `
+    You are an expert sports broadcast data processor. For each JSON object in the input array,
+    perform three tasks and return a single JSON object with all results.
+
+    1. **TRANSLATE**:
+       - Translate 'original_event' and 'original_add_info' from German to English.
+       - Keep capitalization consistent. If already English, leave unchanged.
+
+    2. **EXTRACT & TRANSLATE SPORT INFORMATION**:
+       - Extract and translate 'original_sport' into:
+         - 'sport_en' → must be a generic sport only (Football, Tennis, Golf, Basketball, Ice Hockey, Motorsport, Rugby, Boxing, Handball).
+         - 'context_en' → the specific league, tour, or competition (Bundesliga, NBA, ATP 500, Formula 1).
+       - CRITICAL RULES:
+         - Never put a league/tournament/tour name in 'sport_en'.
+         - If 'original_sport' is only a league (e.g., "NBA"), set sport_en = "Basketball", context_en = "NBA".
+         - If both are present (e.g., "ATP 500 Tennis"), set sport_en = "Tennis", context_en = "ATP 500".
+         - If unsure, pick the closest base sport and never a league.
+
+    3. **CLASSIFY EVENT TYPE**:
+       - is_live_event = true for live games/matches/races. This INCLUDES specific days, rounds, or stages of a tournament (e.g., "4. Tag", "Final Round", "Stage 2").
+       - is_live_event = false for news, highlights, replays, documentaries, conferences, press conferences, interviews, magazine shows, or analysis shows.
+
+    Respond ONLY with valid JSON array matching the schema.
+  `;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    setLoading(true, `Processing data batch ${i + 1} of ${chunks.length}...`);
+    const userPrompt = JSON.stringify(chunk);
+
+    const payload = {
+      contents: [{ parts: [{ text: userPrompt }] }],
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: responseSchema
+      }
+    };
+
+    try {
+      const response = await fetchWithRetry(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`API error (${response.status})`);
+      const result = await response.json();
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error("Invalid API response");
+      const processedItems = JSON.parse(text);
+      for (const item of processedItems) {
+        const key = [item.original_sport, item.original_event, item.original_add_info].join('|');
+        processedMap.set(key, item);
+      }
+    } catch (err) {
+      console.error("AI processing failed:", err);
+      showMessage(`AI processing failed for batch ${i+1}: ${err.message}`, 'error');
+      return null;
+    }
+  }
+  return processedMap;
+}
+
+async function fetchWithRetry(url, options, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok && response.status === 429) throw new Error('Rate limited');
+      return response;
+    } catch (err) {
+      if (err.message === 'Rate limited' && i < retries - 1) {
+        await new Promise(res => setTimeout(res, delay));
+        delay *= 2;
+      } else throw err;
+    }
+  }
+  throw new Error('Max retries reached');
+}
+
+/* ---------- Main processing ---------- */
+async function convertAndReorder(data, fileName) { // Add fileName parameter
+  setLoading(true, 'Finding columns...');
+  const headers = data[0].map(h => String(h ?? '').trim());
+  const lower = headers.map(h => h.toLowerCase());
+  
+  // This is the original, simple column-finding logic from your provided code
+  const dateCol = lower.findIndex(h => h.includes('date'));
+  const startCol = lower.findIndex(h => h.includes('broadcast start time'));
+  const endCol = lower.findIndex(h => h.includes('broadcast end time'));
+  const channelCol = lower.findIndex(h => h.includes('channel'));
+  const sportCol = lower.findIndex(h => h.includes('sport'));
+  const eventCol = lower.findIndex(h => h.includes('event'));
+  const addInfoCol = lower.findIndex(h => h.includes('additional info'));
+  const startIndex = startCol !== -1 ? startCol : lower.findIndex(h => h.includes('start time'));
+  const endIndex = endCol !== -1 ? endCol : lower.findIndex(h => h.includes('end time'));
+  
+  // This is the original check from your provided code
+  const missingCols = [dateCol, channelCol, sportCol, addInfoCol, startIndex, endIndex].filter(i=>i===-1);
+  if (missingCols.length > 0) { 
+    showMessage('Missing required columns.', 'error'); 
+    return null; 
+  }
+
+  const uniqueRowData = new Map();
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const original_sport = String(row[sportCol] ?? '').trim();
+    const original_event = String(row[eventCol] ?? '').trim();
+    const original_add_info = String(row[addInfoCol] ?? '').trim();
+    const key = [original_sport, original_event, original_add_info].join('|');
+    if (!uniqueRowData.has(key)) {
+      uniqueRowData.set(key, { original_sport, original_event, original_add_info });
+    }
+  }
+
+  // ---------- NEW: Pre-filter obvious non-live rows (skip API)
+  const nonLiveKeywords = ['conference', 'press conference', 'magazin', 'highlights', 'news', 'replay', 'interview', 'doku', 'documentary'];
+  const apiCandidates = [];
+  const prefilteredMap = new Map(); // key -> processed object (will be merged into aiProcessedMap)
+  for (const [key, val] of uniqueRowData.entries()) {
+    const hay = `${val.original_event || ''} ${val.original_add_info || ''}`.toLowerCase();
+    const found = nonLiveKeywords.find(kw => hay.includes(kw));
+    if (found) {
+      prefilteredMap.set(key, {
+        original_sport: val.original_sport,
+        original_event: val.original_event,
+        original_add_info: val.original_add_info,
+        sport_en: val.original_sport,
+        context_en: '',
+        event_en: val.original_event,
+        add_info_en: val.original_add_info,
+        is_live_event: true // Note: This was 'true' in the original code, might be a bug, but preserving it.
+      });
+    } else {
+      apiCandidates.push(val);
+    }
+  }
+
+  // Call AI only for candidates that need it
+  let aiProcessedMap = new Map();
+  if (apiCandidates.length > 0) {
+    aiProcessedMap = await getProcessedRowDataAI(apiCandidates);
+    if (!aiProcessedMap) return null;
+  }
+
+  // Merge prefilteredMap into aiProcessedMap so later processing finds them
+  for (const [k, v] of prefilteredMap.entries()) aiProcessedMap.set(k, v);
+  // ---------- end pre-filter
+
+  setLoading(true, 'Building final table...');
+  const processedHeaders = headers.slice(); // Keep a copy of original headers
+  const processedData = [];
+  const seen = new Set();
+  const filteredOutRows = []; // To store filtered rows
+  let filteredNonLiveCount = 0, duplicateCount = 0, aiErrorCount = 0;
+
+  // Keep mapping of original rows (from input) for merged-report reference
+  const inputRowsMapping = []; // will store {rowArray, key}
+  for (let r = 1; r < data.length; r++) {
+    inputRowsMapping.push({ rowArray: data[r], key: [String(data[r][sportCol] ?? '').trim(), String(data[r][eventCol] ?? '').trim(), String(data[r][addInfoCol] ?? '').trim()].join('|') });
+  }
+
+  for (let r = 1; r < data.length; r++) {
+    const originalRow = data[r];
+    const key = [String(originalRow[sportCol] ?? '').trim(), String(originalRow[eventCol] ?? '').trim(), String(originalRow[addInfoCol] ?? '').trim()].join('|');
+    const processed = aiProcessedMap.get(key);
+    
+    if (!processed) {
+      aiErrorCount++;
+      filteredOutRows.push({ data: originalRow, reason: 'AI Processing Error', headers: headers });
+      continue;
+    }
+    if (processed.is_live_event === false) {
+      filteredNonLiveCount++;
+      filteredOutRows.push({ data: originalRow, reason: 'Non-Live (AI)', headers: headers });
+      continue;
+    }
+
+    const eventInfo = `${processed.event_en} ${processed.add_info_en}`.toLowerCase();
+    const foundKeyword = nonLiveKeywords.find(kw => eventInfo.includes(kw));
+    if (foundKeyword) {
+      filteredNonLiveCount++;
+      filteredOutRows.push({ data: originalRow, reason: `Non-Live (Keyword: ${foundKeyword})`, headers: headers });
+      continue;
+    }
+
+    // Sport sanity filter (UPDATED: expanded list + case-insensitive match)
+    const knownSports = [
+      // Major global sports
+      "Football", "Soccer", "Tennis", "Cricket", "Basketball", "Baseball", "Golf", "Hockey", "Rugby", "Volleyball",
+      // Motorsports
+      "Formula 1", "F1", "Formula E", "MotoGP", "Superbike", "Motocross", "Rally", "WRC", "NASCAR", "IndyCar",
+      "Drag Racing", "Karting", "Touring Car", "GT Racing", "Endurance Racing", "Rallycross", "Speedway",
+      // Combat sports
+      "Boxing", "MMA", "UFC", "Judo", "Karate", "Taekwondo", "Wrestling", "Kickboxing", "Muay Thai",
+      // Olympic and individual
+      "Athletics", "Swimming", "Cycling", "Triathlon", "Rowing", "Gymnastics", "Weightlifting", "Archery", "Shooting",
+      "Fencing", "Badminton", "Table Tennis", "Squash", "Climbing", "Skateboarding",
+      // Winter sports
+      "Skiing", "Alpine Skiing", "Cross-Country Skiing", "Snowboarding", "Biathlon", "Ice Skating", "Figure Skating",
+      "Speed Skating", "Ice Hockey", "Bobsleigh", "Skeleton", "Luge", "Curling",
+      // Cue and precision
+      "Snooker", "Billiards", "Pool", "Darts", "Bowling",
+      // American sports
+      "NFL", "NBA", "MLB", "NHL", "College Football", "College Basketball",
+      // Extreme and adventure
+      "Surfing", "Sailing", "Windsurfing", "Kitesurfing", "Paragliding", "Mountain Biking", "Freestyle Skiing",
+      // Esports and modern
+      "Esports", "eSports", "Gaming", "CS2", "Valorant", "League of Legends", "Dota 2", "Fortnite",
+      // Regional and misc
+      "Gaelic Football", "Hurling", "Kabaddi", "Lacrosse", "Softball", "Handball", "Petanque", "Polo"
+    ];
+    const knownLower = knownSports.map(s => s.toLowerCase());
+    const sportVal = (processed.sport_en || '').trim();
+    if (!knownLower.includes(String(sportVal).toLowerCase()) || /^[A-Z]{2,5}$/.test(sportVal)) {
+      const ctx = (processed.context_en || '').toLowerCase();
+      const inferred = knownSports.find(s => ctx.includes(s.toLowerCase()));
+      processed.sport_en = inferred || 'Other';
+    }
+
+    const row = originalRow.slice();
+    let combinedAddInfo = processed.add_info_en;
+    if (processed.context_en && !combinedAddInfo.toLowerCase().includes(processed.context_en.toLowerCase())) {
+      combinedAddInfo = combinedAddInfo ? `${processed.context_en}: ${combinedAddInfo}` : processed.context_en;
+    }
+    const finalAddInfo = cleanAdditionalInfo(combinedAddInfo);
+    row[sportCol] = processed.sport_en;
+    row[eventCol] = processed.event_en;
+    row[addInfoCol] = finalAddInfo;
+    row[channelCol] = 'Sky DE';
+    const parsedDate = extractDMY(row[dateCol]);
+    if (startIndex !== -1) {
+      const utcDateTime = parsedDate && convertToUTCDateTime(parsedDate.y, parsedDate.m, parsedDate.d, row[startIndex]);
+      if (utcDateTime) { row[dateCol] = formatDDMMYYYY(utcDateTime); row[startIndex] = formatHHMM(utcDateTime); }
+    }
+    if (endIndex !== -1) {
+      const parsedEnd = extractDMY(row[dateCol]) || parsedDate;
+      const utcDateTimeEnd = parsedEnd && convertToUTCDateTime(parsedEnd.y, parsedEnd.m, parsedEnd.d, row[endIndex]);
+      if (utcDateTimeEnd) { row[dateCol] = formatDDMMYYYY(utcDateTimeEnd); row[endIndex] = formatHHMM(utcDateTimeEnd); }
+    }
+
+    const deDupeKey = [row[channelCol], row[dateCol], row[startIndex], row[endIndex], row[sportCol], row[eventCol], row[addInfoCol]].map(v=>String(v??'').trim()).join('|');
+    if (seen.has(deDupeKey)) {
+      duplicateCount++;
+      filteredOutRows.push({ data: originalRow, reason: 'Duplicate', headers: headers }); // Store duplicate
+      continue;
+    }
+    seen.add(deDupeKey);
+    processedData.push(row);
+  }
+
+  // ---------- NEW: Merge overlapping/contiguous events by Additional Info ----------
+  // Only merge when we have startIndex and endIndex valid
+  let mergedReport = []; // array of { mergedRow, originals: [ {row, date,start,end} ] }
+  if (startIndex !== -1 && endIndex !== -1 && addInfoCol !== -1) {
+    const groups = new Map();
+    // Build group lists by addInfo value
+    for (let i = 0; i < processedData.length; i++) {
+      const row = processedData[i];
+      const addKey = String(row[addInfoCol] ?? '').trim();
+      if (!groups.has(addKey)) groups.set(addKey, []);
+      // compute start & end as Luxon DateTimes in UTC if possible
+      const dateStr = String(row[dateCol] ?? '');
+      const startStr = String(row[startIndex] ?? '');
+      const endStr = String(row[endIndex] ?? '');
+      const parsed = extractDMY(dateStr);
+      let startDT = null, endDT = null;
+      if (parsed && startStr.match(/\d{1,2}:\d{2}/)) {
+        const hh = parseInt(startStr.split(':')[0],10);
+        const mm = parseInt(startStr.split(':')[1],10);
+        startDT = luxon.DateTime.fromObject({ year: parsed.y, month: parsed.m, day: parsed.d, hour: hh, minute: mm }, { zone: 'utc' });
+      }
+      if (parsed && endStr.match(/\d{1,2}:\d{2}/)) {
+        const hh = parseInt(endStr.split(':')[0],10);
+        const mm = parseInt(endStr.split(':')[1],10);
+        endDT = luxon.DateTime.fromObject({ year: parsed.y, month: parsed.m, day: parsed.d, hour: hh, minute: mm }, { zone: 'utc' });
+      }
+      groups.get(addKey).push({ row, startDT, endDT });
+    }
+
+    // For each group, sort and merge overlapping/contiguous intervals
+    const newProcessedData = [];
+    for (const [addKey, items] of groups.entries()) {
+      if (!addKey) {
+        // addKey empty: no merge grouping - just append all
+        for (const it of items) newProcessedData.push(it.row);
+        continue;
+      }
+      // Only consider items which have valid start and end
+      const withTimes = items.filter(it => it.startDT && it.endDT);
+      const withoutTimes = items.filter(it => !(it.startDT && it.endDT));
+
+      if (withTimes.length <= 1) {
+        // nothing to merge for time-capable items; just push them and the withoutTimes
+        for (const it of withTimes) newProcessedData.push(it.row);
+        for (const it of withoutTimes) newProcessedData.push(it.row);
+        continue;
+      }
+
+      // sort by start
+      withTimes.sort((a,b)=>a.startDT.valueOf() - b.startDT.valueOf());
+
+      // merge adjacent overlapping or touching intervals (touching uses <=)
+      let current = { startDT: withTimes[0].startDT, endDT: withTimes[0].endDT, originals: [withTimes[0].row] };
+      const mergedItemsForKey = [];
+      for (let i = 1; i < withTimes.length; i++) {
+        const next = withTimes[i];
+        // If overlap or touching (next.start <= current.end) — note: <= ensures contiguous (touching) merges
+        if (next.startDT.valueOf() <= current.endDT.valueOf()) {
+          // extend end if needed
+          if (next.endDT.valueOf() > current.endDT.valueOf()) {
+            current.endDT = next.endDT;
+          }
+          current.originals.push(next.row);
+        } else {
+          // finalize current
+          mergedItemsForKey.push(current);
+          // start a new current
+          current = { startDT: next.startDT, endDT: next.endDT, originals: [next.row] };
+        }
+      }
+      mergedItemsForKey.push(current);
+
+      // If any mergedItemsForKey entries have originals length > 1 -> they were merged (overlapping or contiguous)
+      for (const mi of mergedItemsForKey) {
+        if (mi.originals.length > 1) {
+          // create merged row using first original row as base, set earliest start and latest end
+          const earliest = mi.startDT;
+          const latest = mi.endDT;
+          // Use first original as base
+          const baseRow = mi.originals[0].slice();
+          // set date/start/end to earliest/latest (formatted)
+          baseRow[dateCol] = formatDDMMYYYY(earliest);
+          baseRow[startIndex] = formatHHMM(earliest);
+          baseRow[endIndex] = formatHHMM(latest);
+          newProcessedData.push(baseRow);
+          // add merged report entry: include baseRow (mergedRow) and list of originals (with displayable info)
+          const originalsList = mi.originals.map(orig => {
+            const d = String(orig[dateCol] ?? '');
+            const s = String(orig[startIndex] ?? '');
+            const e = String(orig[endIndex] ?? '');
+            return { row: orig, date: d, start: s, end: e };
+          });
+          mergedReport.push({ mergedRow: baseRow, originals: originalsList, addInfo: addKey, combinedStart: earliest, combinedEnd: latest });
+        } else {
+          // not merged, just push the single original
+          newProcessedData.push(mi.originals[0]);
+        }
+      }
+
+      // append items without times (can't be merged by time) - keep them as-is
+      for (const it of withoutTimes) newProcessedData.push(it.row);
+    }
+
+    // Replace processedData with newProcessedData
+    processedData.length = 0;
+    for (const nr of newProcessedData) processedData.push(nr);
+  }
+  // ---------- end merging
+
+  // ---------- NEW: Sort processedData by start datetime ascending (after merging) ----------
+  if (startIndex !== -1) {
+    processedData.sort((a, b) => {
+      try {
+        const aDate = extractDMY(a[dateCol]);
+        const bDate = extractDMY(b[dateCol]);
+        let aDt = null, bDt = null;
+        if (aDate && String(a[startIndex] ?? '').match(/\d{1,2}:\d{2}/)) {
+          const hh = parseInt(String(a[startIndex]).split(':')[0],10);
+          const mm = parseInt(String(a[startIndex]).split(':')[1],10);
+          aDt = luxon.DateTime.fromObject({ year: aDate.y, month: aDate.m, day: aDate.d, hour: hh, minute: mm }, { zone: 'utc' });
+        }
+        if (bDate && String(b[startIndex] ?? '').match(/\d{1,2}:\d{2}/)) {
+          const hh = parseInt(String(b[startIndex]).split(':')[0],10);
+          const mm = parseInt(String(b[startIndex]).split(':')[1],10);
+          bDt = luxon.DateTime.fromObject({ year: bDate.y, month: bDate.m, day: bDate.d, hour: hh, minute: mm }, { zone: 'utc' });
+        }
+        if (aDt && bDt) return aDt.valueOf() - bDt.valueOf();
+        if (aDt) return -1;
+        if (bDt) return 1;
+        return 0;
+      } catch (e) {
+        return 0;
+      }
+    });
+  }
+  // ---------- end sorting
+
+  showMessage(`Done. ${processedData.length} rows kept. ${filteredNonLiveCount} removed (non-live). ${duplicateCount} duplicates skipped. ${aiErrorCount} AI errors.`, 'info');
+  
+  // Render merged events box if any merges occurred
+  renderMergedEvents(mergedReport);
+
+  renderFilteredTable(filteredOutRows); // Render the filtered table
+
+  // Construct the final matrix/headers
+  const finalOut = [];
+  
+  finalOut.push([
+    processedHeaders[dateCol],
+    processedHeaders[channelCol],
+    "Linear",
+    processedHeaders[sportCol],
+    processedHeaders[addInfoCol],
+    "", "", "", "",
+    "Broadcast Start Time UTC", // Changed from processedHeaders[startIndex]
+    "Broadcast End Time UTC"    // Changed from processedHeaders[endIndex]
+  ]);
+
+  for (const row of processedData) {
+    finalOut.push([
+      row[dateCol],
+      row[channelCol],
+      "Linear",
+      row[sportCol],
+      row[addInfoCol],
+      "", "", "", "",
+      row[startIndex],
+      row[endIndex]
+    ]);
+  }
+
+  // NEW: Save successful result to localStorage
+  try {
+    const cacheData = {
+      finalOut: finalOut,
+      mergedReport: mergedReport,     // Available in this scope
+      filteredRows: filteredOutRows, // Available in this scope
+      message: messageArea.innerHTML, // Get the message we just set
+      fileName: fileName
+    };
+    localStorage.setItem('rahulsConverterCache', JSON.stringify(cacheData));
+    console.log('Saved result to localStorage.');
+  } catch (e) {
+    console.warn('Failed to save to localStorage', e);
+  }
+
+  return finalOut;
+}
+
+/* ---------- Helpers ---------- */
+function extractDMY(raw){
+  if(!raw) return null;
+  if (raw instanceof Date && !isNaN(raw)) return { d: raw.getDate(), m: raw.getMonth() + 1, y: raw.getFullYear() };
+  const s = String(raw).trim();
+  let m = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (m) return { d: parseInt(m[1],10), m: parseInt(m[2],10), y: parseInt(m[3],10) };
+  m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return { d: parseInt(m[3],10), m: parseInt(m[2],10), y: parseInt(m[1],10) };
+  m = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return { d: parseInt(m[1],10), m: parseInt(m[2],10), y: parseInt(m[3],10) };
+  return null;
+}
+function convertToUTCDateTime(year, month, day, timeStr){
+  const mtime = String(timeStr).trim().match(/(\d{1,2}):(\d{2})/);
+  if (!mtime) return null;
+  const hh = parseInt(mtime[1], 10);
+  const mm = parseInt(mtime[2], 10);
+  const localDt = luxon.DateTime.fromObject({ year: year, month: month, day: day, hour: hh, minute: mm }, { zone: SOURCE_TIMEZONE });
+  if (!localDt.isValid) return null;
+  return localDt.toUTC();
+}
+function pad(n){ return String(n).padStart(2,'0'); }
+function formatDDMMYYYY(dt){ return `${pad(dt.day)}/${pad(dt.month)}/${dt.year}`; }
+function formatHHMM(dt){ return `${pad(dt.hour)}:${pad(dt.minute)}`; }
+function cleanAdditionalInfo(info) {
+  if (!info) return "";
+  const junkPatterns = [
+    /\(Social Media Coverage\)/gi,
+    /\(NETFLIX\)/gi,
+    /-\s+[a-z0-9]+\s+ch\d+/gi,
+    /-\s+[a-z0-9]+\s+ch\d+,\s+[a-z0-9]+\s+ch\d+/gi
+  ];
+  let cleaned = info;
+  for (const p of junkPatterns) cleaned = cleaned.replace(p, '');
+  return cleaned.trim().replace(/:\s*$/, '').trim();
+}
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+/* ---------- Render Main Table ---------- */
+function renderTable(data) {
+  tableContainer.innerHTML = '';
+  if (!data || data.length === 0) {
+    tableContainer.innerHTML = `<div class="p-6 text-gray-500 dark:text-gray-300">No data to display.</div>`;
+    return;
+  }
+
+  const headers = data[0].map(h => String(h ?? ''));
+  let sportColumnIndex = -1;
+  for (let i = 0; i < headers.length; i++) {
+    if (headers[i].toLowerCase().includes('sport')) { sportColumnIndex = i; break; }
+  }
+
+  // find indices for date/start/end columns so we can attach data-utc attributes
+  const dateColIndex = headers.findIndex(h => /date/i.test(h)) !== -1 ? headers.findIndex(h => /date/i.test(h)) : 0;
+  const startColIndex = headers.findIndex(h => /broadcast start time utc/i.test(h));
+  const endColIndex = headers.findIndex(h => /broadcast end time utc/i.test(h));
+
+  const table = document.createElement('table');
+  table.className = 'min-w-full border-collapse table-fixed'; // Added table-fixed
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  for (const h of headers) {
+    const th = document.createElement('th');
+    th.className = 'px-4 py-2 text-left bg-gray-50 dark:bg-gray-700 dark:text-gray-100 border-b font-medium text-sm';
+    th.textContent = h ?? '';
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const tr = document.createElement('tr');
+    // Option B: flat dark rows — always use same bg in dark mode (no striping)
+    tr.className = 'bg-white dark:bg-gray-800';
+    for (let c = 0; c < headers.length; c++) {
+      const td = document.createElement('td');
+      td.className = 'px-4 py-2 text-sm align-top border-b';
+      let cell = String(row[c] ?? '');
+      if (c === sportColumnIndex && cell.includes(':')) {
+        cell = cell.replace(/:.*$/s, '').trim();
+      }
+
+      // If this is start or end column, attach a data-utc attribute
+      if ((c === startColIndex || c === endColIndex) && cell.match(/\d{1,2}:\d{2}/)) {
+        // parse date from dateColIndex and time cell to build an ISO UTC
+        const dateCell = String(row[dateColIndex] ?? '');
+        const parsed = extractDMY(dateCell);
+        if (parsed) {
+          const mtime = String(cell).trim().match(/(\d{1,2}):(\d{2})/);
+          if (mtime) {
+            const hh = parseInt(mtime[1], 10);
+            const mm = parseInt(mtime[2], 10);
+            const dt = luxon.DateTime.fromObject({ year: parsed.y, month: parsed.m, day: parsed.d, hour: hh, minute: mm }, { zone: 'utc' });
+            if (dt.isValid) {
+              td.dataset.utc = dt.toISO();
+              td.textContent = pad(dt.hour) + ':' + pad(dt.minute);
+            } else {
+              td.textContent = cell;
+            }
+          } else {
+            td.textContent = cell;
+          }
+        } else {
+          td.textContent = cell;
+        }
+      } else {
+        td.textContent = cell;
+      }
+
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'overflow-auto p-4';
+  wrapper.appendChild(table);
+  tableContainer.appendChild(wrapper);
+}
+
+/* ---------- Render Merged Events Box (Collapsible) ---------- */
+function renderMergedEvents(mergedReport) {
+  const container = mergedEventsContainer;
+  container.innerHTML = ''; // clear old
+  if (!mergedReport || mergedReport.length === 0) return;
+
+  const title = document.createElement('h2');
+  title.className = 'text-xl font-bold mb-3 cursor-pointer select-none'; // Make clickable
+  title.textContent = 'Merged / Overlapping Events (Click to expand)';
+  container.appendChild(title);
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'merged-box border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-800';
+  wrapper.classList.add('hidden'); // Hide by default
+
+  // Add toggle functionality
+  title.addEventListener('click', () => {
+    const isHidden = wrapper.classList.toggle('hidden');
+    title.textContent = isHidden ? 'Merged / Overlapping Events (Click to expand)' : 'Merged / Overlapping Events (Click to collapse)';
+  });
+
+  // For each merged item, show merged summary and list of appended originals
+  for (const item of mergedReport) {
+    const card = document.createElement('div');
+    card.className = 'mb-3 p-2 rounded-md bg-white dark:bg-gray-700 border border-gray-100 dark:border-gray-600';
+    // merged summary
+    const mergedSummary = document.createElement('div');
+    mergedSummary.className = 'text-sm font-medium mb-2';
+    const mRow = item.mergedRow;
+    // combinedStart/combinedEnd may be Luxon DateTimes; if present format them
+    let combinedLabel = '';
+    if (item.combinedStart && item.combinedEnd) {
+      combinedLabel = `${formatHHMM(item.combinedStart)}–${formatHHMM(item.combinedEnd)} on ${formatDDMMYYYY(item.combinedStart)}`;
+    } else {
+      // fallback to reading merged row cells
+      const date = mRow[0] ?? '';
+      const start = mRow[mRow.length-2] ?? '';
+      const end = mRow[mRow.length-1] ?? '';
+      combinedLabel = `${start}–${end} on ${date}`;
+    }
+    const addInfo = item.addInfo || (mRow[mRow.length - 5] ?? '');
+    mergedSummary.innerHTML = `<div class="text-sm"><strong>Merged:</strong> ${escapeHtml(addInfo)} — ${escapeHtml(combinedLabel)} (merged ${item.originals.length} segments)</div>`;
+    card.appendChild(mergedSummary);
+
+    // appended originals list
+    const listWrap = document.createElement('div');
+    listWrap.className = 'text-sm';
+    const ul = document.createElement('ul');
+    ul.className = 'list-disc pl-5 space-y-1';
+    for (const orig of item.originals) {
+      const li = document.createElement('li');
+      li.textContent = `${orig.date} ${orig.start}–${orig.end}`;
+      ul.appendChild(li);
+    }
+    listWrap.appendChild(ul);
+    card.appendChild(listWrap);
+
+    wrapper.appendChild(card);
+  }
+
+  container.appendChild(wrapper);
+}
+
+/* ---------- Render Filtered-Out Table (Collapsible) ---------- */
+function renderFilteredTable(filteredRows) {
+  const container = document.getElementById('filtered-table-container');
+  container.innerHTML = ''; // Clear previous
+  
+  const title = document.createElement('h2');
+  title.className = 'text-xl font-bold mb-4 pt-4 border-t dark:text-gray-100 cursor-pointer select-none'; // Make clickable
+  title.textContent = 'Filtered-Out Rows (Click to expand)';
+  container.appendChild(title);
+
+  const contentWrapper = document.createElement('div'); // Wrapper for content
+  contentWrapper.classList.add('hidden'); // Hide by default
+  container.appendChild(contentWrapper);
+
+  // Add toggle functionality
+  title.addEventListener('click', () => {
+    const isHidden = contentWrapper.classList.toggle('hidden');
+    title.textContent = isHidden ? 'Filtered-Out Rows (Click to expand)' : 'Filtered-Out Rows (Click to collapse)';
+  });
+
+  if (!filteredRows || filteredRows.length === 0) {
+    contentWrapper.innerHTML = `<div class="p-4 text-gray-500 dark:text-gray-300">No rows were filtered out.</div>`;
+    return;
+  }
+
+  // Get headers from the first filtered row.
+  const headers = filteredRows[0].headers.slice(); // Use original headers
+  headers.push('Filter Reason'); // Add new column
+
+  const table = document.createElement('table');
+  table.className = 'min-w-full border-collapse table-fixed'; // Added table-fixed
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  for (const h of headers) {
+    const th = document.createElement('th');
+    th.className = 'px-4 py-2 text-left bg-gray-50 dark:bg-gray-700 dark:text-gray-100 border-b font-medium text-sm';
+    th.textContent = h ?? '';
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (let r = 0; r < filteredRows.length; r++) {
+    const item = filteredRows[r];
+    const rowData = item.data;
+    const tr = document.createElement('tr');
+    // flat dark rows for filtered table as well
+    tr.className = 'bg-white dark:bg-gray-800';
+    
+    // Render original row data
+    for (let c = 0; c < item.headers.length; c++) {
+      const td = document.createElement('td');
+      td.className = 'px-4 py-2 text-sm align-top border-b';
+      // Render the original data as it was
+      td.textContent = String(rowData[c] ?? '');
+      tr.appendChild(td);
+    }
+    
+    // Render the filter reason
+    const tdReason = document.createElement('td');
+    tdReason.className = 'px-4 py-2 text-sm align-top border-b font-medium text-red-600 dark:text-red-400';
+    tdReason.textContent = item.reason;
+    tr.appendChild(tdReason);
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  // Add a wrapper for scrolling, same as the main table
+  const wrapper = document.createElement('div');
+  wrapper.className = 'overflow-auto p-4 border border-gray-200 dark:border-gray-700 rounded-lg';
+  wrapper.appendChild(table);
+  contentWrapper.appendChild(wrapper); // Append table wrapper to the collapsible contentWrapper
+}
+
+// NEW: Load from localStorage on page load
+// This listener must be at the end, after all functions and consts are defined.
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const cachedData = localStorage.getItem('rahulsConverterCache');
+    if (cachedData) {
+      const data = JSON.parse(cachedData);
+      if (data && data.finalOut && data.mergedReport && data.filteredRows && data.message && data.fileName) {
+        console.log('Loading cached data from localStorage...');
+        
+        // Restore UI from cache
+        renderTable(data.finalOut);
+        renderMergedEvents(data.mergedReport);
+        renderFilteredTable(data.filteredRows);
+        
+        // Restore state
+        window.lastFinalOut = data.finalOut;
+        downloadBtn.classList.remove('hidden'); // Show download button
+        fileNameSpan.textContent = data.fileName; // Restore file name
+        
+        // Restore message and add "restored" note
+        messageArea.innerHTML = data.message;
+        const p = messageArea.querySelector('p');
+        if (p) {
+            p.textContent = p.textContent + ' (Restored from session)';
+        } else {
+            // Fallback if message was just a spinner (unlikely but safe)
+            showMessage(data.message + ' (Restored from session)', 'info');
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load from localStorage', e);
+    localStorage.removeItem('rahulsConverterCache'); // Clear corrupted cache
+  }
+});
+</script>
+</body>
+</html>
