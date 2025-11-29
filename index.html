@@ -260,6 +260,7 @@ function formatDDMMYYYY(dt){ return `${pad(dt.day)}/${pad(dt.month)}/${dt.year}`
   - NEW: Download main table button (shown after processing) with sport-column sanitization
   - NEW: Sorting after merging — ascending by start datetime
   - NEW: Collapsible Merged & Filtered sections
+  - OPTIMIZED: Parallel batch processing and smaller chunks
 */
 
 const fileInput = document.getElementById('file-upload');
@@ -272,7 +273,8 @@ const SOURCE_TIMEZONE = 'Europe/Berlin';
 
  // Gemini config
 const apiUrl = "/api/gemini"; // local relative path to your Vercel function
-const API_CHUNK_SIZE = 200;
+// Reduced chunk size to prevent Vercel timeouts (30 rows process faster than 60s limit)
+const API_CHUNK_SIZE = 30;
 
 // lastFinalOut will store the final matrix (array of arrays) for download
 window.lastFinalOut = null;
@@ -410,6 +412,8 @@ function setLoading(isLoading, message = '') {
 async function getProcessedRowDataAI(uniqueRowData) {
   const processedMap = new Map();
   const chunks = [];
+  
+  // 1. Chunking
   for (let i = 0; i < uniqueRowData.length; i += API_CHUNK_SIZE)
     chunks.push(uniqueRowData.slice(i, i + API_CHUNK_SIZE));
 
@@ -456,41 +460,66 @@ async function getProcessedRowDataAI(uniqueRowData) {
     Respond ONLY with valid JSON array matching the schema.
   `;
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    setLoading(true, `Processing data batch ${i + 1} of ${chunks.length}...`);
-    const userPrompt = JSON.stringify(chunk);
+  // 2. Parallel Processing (Batches of 5)
+  // This concurrency limit prevents hitting Gemini's rate limits too aggressively while speeding up total time.
+  const CONCURRENCY_LIMIT = 5;
 
-    const payload = {
-      contents: [{ parts: [{ text: userPrompt }] }],
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema
-      }
-    };
+  for (let i = 0; i < chunks.length; i += CONCURRENCY_LIMIT) {
+    const batch = chunks.slice(i, i + CONCURRENCY_LIMIT);
+    
+    const batchStart = i + 1;
+    const batchEnd = Math.min(i + CONCURRENCY_LIMIT, chunks.length);
+    setLoading(true, `Processing batch ${batchStart} to ${batchEnd} of ${chunks.length}...`);
 
-    try {
-      const response = await fetchWithRetry(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) throw new Error(`API error (${response.status})`);
-      const result = await response.json();
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error("Invalid API response");
-      const processedItems = JSON.parse(text);
-      for (const item of processedItems) {
-        const key = [item.original_sport, item.original_event, item.original_add_info].join('|');
-        processedMap.set(key, item);
-      }
-    } catch (err) {
-      console.error("AI processing failed:", err);
-      showMessage(`AI processing failed for batch ${i+1}: ${err.message}`, 'error');
-      return null;
-    }
+    // Create an array of promises for parallel execution
+    const promises = batch.map(chunk => {
+        const userPrompt = JSON.stringify(chunk);
+        const payload = {
+            contents: [{ parts: [{ text: userPrompt }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: responseSchema
+            }
+        };
+
+        return fetchWithRetry(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(async response => {
+            if (!response.ok) throw new Error(`API error (${response.status})`);
+            const result = await response.json();
+            const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!text) throw new Error("Invalid API response (Empty)");
+            return JSON.parse(text);
+        })
+        .catch(err => {
+            console.error("AI processing chunk failed:", err);
+            // Return empty array to prevent Promise.all from failing completely
+            return []; 
+        });
+    });
+
+    // Wait for all requests in this batch to finish
+    const results = await Promise.all(promises);
+
+    // Merge results
+    results.flat().forEach(item => {
+        if (item && item.original_sport) { // Basic sanity check
+            const key = [item.original_sport, item.original_event, item.original_add_info].join('|');
+            processedMap.set(key, item);
+        }
+    });
   }
+
+  // Check if we got any results at all
+  if (processedMap.size === 0 && chunks.length > 0) {
+      showMessage("AI processing failed for all batches. Check API key and logs.", 'error');
+      return null;
+  }
+  
   return processedMap;
 }
 
@@ -515,7 +544,7 @@ async function convertAndReorder(data, fileName) { // Add fileName parameter
   setLoading(true, 'Finding columns...');
   const headers = data[0].map(h => String(h ?? '').trim());
   const lower = headers.map(h => h.toLowerCase());
-  
+   
   // This is the original, simple column-finding logic from your provided code
   const dateCol = lower.findIndex(h => h.includes('date'));
   const startCol = lower.findIndex(h => h.includes('broadcast start time'));
@@ -526,7 +555,7 @@ async function convertAndReorder(data, fileName) { // Add fileName parameter
   const addInfoCol = lower.findIndex(h => h.includes('additional info'));
   const startIndex = startCol !== -1 ? startCol : lower.findIndex(h => h.includes('start time'));
   const endIndex = endCol !== -1 ? endCol : lower.findIndex(h => h.includes('end time'));
-  
+   
   // This is the original check from your provided code
   const missingCols = [dateCol, channelCol, sportCol, addInfoCol, startIndex, endIndex].filter(i=>i===-1);
   if (missingCols.length > 0) { 
@@ -820,7 +849,7 @@ async function convertAndReorder(data, fileName) { // Add fileName parameter
   // ---------- end sorting
 
   showMessage(`Done. ${processedData.length} rows kept. ${filteredNonLiveCount} removed (non-live). ${duplicateCount} duplicates skipped. ${aiErrorCount} AI errors.`, 'info');
-  
+   
   // Render merged events box if any merges occurred
   renderMergedEvents(mergedReport);
 
@@ -828,7 +857,7 @@ async function convertAndReorder(data, fileName) { // Add fileName parameter
 
   // Construct the final matrix/headers
   const finalOut = [];
-  
+   
   finalOut.push([
     processedHeaders[dateCol],
     processedHeaders[channelCol],
@@ -857,7 +886,7 @@ async function convertAndReorder(data, fileName) { // Add fileName parameter
   try {
     const cacheData = {
       finalOut: finalOut,
-      mergedReport: mergedReport,     // Available in this scope
+      mergedReport: mergedReport,      // Available in this scope
       filteredRows: filteredOutRows, // Available in this scope
       message: messageArea.innerHTML, // Get the message we just set
       fileName: fileName
@@ -1062,7 +1091,7 @@ function renderMergedEvents(mergedReport) {
 function renderFilteredTable(filteredRows) {
   const container = document.getElementById('filtered-table-container');
   container.innerHTML = ''; // Clear previous
-  
+   
   const title = document.createElement('h2');
   title.className = 'text-xl font-bold mb-4 pt-4 border-t dark:text-gray-100 cursor-pointer select-none'; // Make clickable
   title.textContent = 'Filtered-Out Rows (Click to expand)';
@@ -1107,7 +1136,7 @@ function renderFilteredTable(filteredRows) {
     const tr = document.createElement('tr');
     // flat dark rows for filtered table as well
     tr.className = 'bg-white dark:bg-gray-800';
-    
+     
     // Render original row data
     for (let c = 0; c < item.headers.length; c++) {
       const td = document.createElement('td');
@@ -1116,7 +1145,7 @@ function renderFilteredTable(filteredRows) {
       td.textContent = String(rowData[c] ?? '');
       tr.appendChild(td);
     }
-    
+     
     // Render the filter reason
     const tdReason = document.createElement('td');
     tdReason.className = 'px-4 py-2 text-sm align-top border-b font-medium text-red-600 dark:text-red-400';
@@ -1143,17 +1172,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = JSON.parse(cachedData);
       if (data && data.finalOut && data.mergedReport && data.filteredRows && data.message && data.fileName) {
         console.log('Loading cached data from localStorage...');
-        
+         
         // Restore UI from cache
         renderTable(data.finalOut);
         renderMergedEvents(data.mergedReport);
         renderFilteredTable(data.filteredRows);
-        
+         
         // Restore state
         window.lastFinalOut = data.finalOut;
         downloadBtn.classList.remove('hidden'); // Show download button
         fileNameSpan.textContent = data.fileName; // Restore file name
-        
+         
         // Restore message and add "restored" note
         messageArea.innerHTML = data.message;
         const p = messageArea.querySelector('p');
